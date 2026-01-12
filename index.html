@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="UTF-8">
+<title>Automaattinen WebUSB COM-Terminaali</title>
+<style>
+body { font-family: monospace; background: #1e1e2f; color: #fff; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+button, input { margin: 5px; padding: 5px; border-radius: 5px; border: none; }
+#terminal { width: 600px; height: 400px; background: #000; color: #0f0; padding: 10px; overflow-y: auto; border-radius: 5px; margin-top: 10px; white-space: pre-wrap; }
+#inputArea { display: flex; margin-top: 10px; }
+#inputArea input { flex: 1; }
+</style>
+</head>
+<body>
+
+<h1>Automaattinen WebUSB COM-Terminaali</h1>
+
+<button id="connectBtn">Yhdistä USB</button>
+<div id="terminal"></div>
+
+<div id="inputArea">
+    <input type="text" id="sendInput" placeholder="Kirjoita ja paina Enter">
+    <button id="sendBtn">Lähetä</button>
+</div>
+
+<script>
+let device;
+let inEndpoint, outEndpoint;
+let keepReading = false;
+
+const terminal = document.getElementById("terminal");
+function logTerminal(msg) { terminal.textContent += msg + "\n"; terminal.scrollTop = terminal.scrollHeight; }
+
+async function autoConnect() {
+    try {
+        // Pyydä käyttäjältä USB-laite
+        device = await navigator.usb.requestDevice({ filters: [] }); 
+        await device.open();
+        if (!device.configuration) await device.selectConfiguration(1);
+
+        // Etsi ensimmäinen CDC/ACM (Serial) interface
+        let cdcInterface = device.configuration.interfaces.find(iface =>
+            iface.alternates.some(alt => alt.interfaceClass === 0x0A) // CDC Data
+        );
+        if (!cdcInterface) {
+            logTerminal("CDC/ACM-laite ei löydetty.");
+            return;
+        }
+
+        await device.claimInterface(cdcInterface.interfaceNumber);
+        const alternate = cdcInterface.alternates[0];
+        inEndpoint = alternate.endpoints.find(ep => ep.direction === "in").endpointNumber;
+        outEndpoint = alternate.endpoints.find(ep => ep.direction === "out").endpointNumber;
+
+        // Aseta portti valmiiksi
+        await device.controlTransferOut({
+            requestType: "class",
+            recipient: "interface",
+            request: 0x22, // SET_CONTROL_LINE_STATE
+            value: 0x01,
+            index: cdcInterface.interfaceNumber
+        });
+
+        logTerminal("USB-laite yhdistetty! Interface: " + cdcInterface.interfaceNumber +
+                    " IN: " + inEndpoint + " OUT: " + outEndpoint);
+
+        keepReading = true;
+        readLoop();
+    } catch (err) {
+        logTerminal("Virhe: " + err);
+    }
+}
+
+// Luku loop
+async function readLoop() {
+    while (keepReading) {
+        try {
+            const result = await device.transferIn(inEndpoint, 64);
+            const text = new TextDecoder().decode(result.data);
+            if (text) logTerminal(text.trim());
+        } catch (err) {
+            logTerminal("Lukuvirhe: " + err);
+            keepReading = false;
+        }
+    }
+}
+
+// Lähetä dataa
+async function sendData() {
+    if (!device) return logTerminal("Ei yhdistettyä laitetta!");
+    const input = document.getElementById("sendInput");
+    const data = new TextEncoder().encode(input.value + "\n");
+    input.value = "";
+    try {
+        await device.transferOut(outEndpoint, data);
+        logTerminal("> " + new TextDecoder().decode(data));
+    } catch (err) {
+        logTerminal("Virhe lähetyksessä: " + err);
+    }
+}
+
+document.getElementById("connectBtn").addEventListener("click", autoConnect);
+document.getElementById("sendBtn").addEventListener("click", sendData);
+document.getElementById("sendInput").addEventListener("keydown", e => { if (e.key === "Enter") sendData(); });
+</script>
+
+</body>
+</html>
