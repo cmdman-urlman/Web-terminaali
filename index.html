@@ -2,107 +2,96 @@
 <html lang="fi">
 <head>
 <meta charset="UTF-8">
-<title>Automaattinen WebUSB COM-Terminaali</title>
+<title>Universal Web Device Terminal</title>
 <style>
-body { font-family: monospace; background: #1e1e2f; color: #fff; display: flex; flex-direction: column; align-items: center; padding: 20px; }
-button, input { margin: 5px; padding: 5px; border-radius: 5px; border: none; }
-#terminal { width: 600px; height: 400px; background: #000; color: #0f0; padding: 10px; overflow-y: auto; border-radius: 5px; margin-top: 10px; white-space: pre-wrap; }
-#inputArea { display: flex; margin-top: 10px; }
-#inputArea input { flex: 1; }
+body {
+  background:#0b0f1a;
+  color:#00ff9c;
+  font-family:monospace;
+  padding:20px;
+}
+#terminal {
+  background:black;
+  height:400px;
+  overflow:auto;
+  padding:10px;
+  border:1px solid #00ff9c;
+  white-space:pre-wrap;
+}
+button,input {
+  background:#111;
+  color:#00ff9c;
+  border:1px solid #00ff9c;
+  padding:6px;
+}
 </style>
 </head>
 <body>
 
-<h1>Automaattinen WebUSB COM-Terminaali</h1>
-
-<button id="connectBtn">Yhdistä USB</button>
+<h2>Universal Web Device Terminal</h2>
+<button onclick="connect()">Yhdistä laite</button>
 <div id="terminal"></div>
-
-<div id="inputArea">
-    <input type="text" id="sendInput" placeholder="Kirjoita ja paina Enter">
-    <button id="sendBtn">Lähetä</button>
-</div>
+<input id="input" placeholder="lähetä dataa">
 
 <script>
-let device;
-let inEndpoint, outEndpoint;
-let keepReading = false;
+const term = document.getElementById("terminal");
+const log = t => {
+  term.textContent += t + "\n";
+  term.scrollTop = term.scrollHeight;
+};
 
-const terminal = document.getElementById("terminal");
-function logTerminal(msg) { terminal.textContent += msg + "\n"; terminal.scrollTop = terminal.scrollHeight; }
-
-async function autoConnect() {
+async function connect() {
+  // 1️⃣ WEB SERIAL (Arduino, COM, ESP, jne.)
+  if ("serial" in navigator) {
     try {
-        // Pyydä käyttäjältä USB-laite
-        device = await navigator.usb.requestDevice({ filters: [] }); 
-        await device.open();
-        if (!device.configuration) await device.selectConfiguration(1);
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 9600 });
+      log("✅ Web Serial käytössä");
 
-        // Etsi ensimmäinen CDC/ACM (Serial) interface
-        let cdcInterface = device.configuration.interfaces.find(iface =>
-            iface.alternates.some(alt => alt.interfaceClass === 0x0A) // CDC Data
-        );
-        if (!cdcInterface) {
-            logTerminal("CDC/ACM-laite ei löydetty.");
-            return;
+      const reader = port.readable.getReader();
+      const writer = port.writable.getWriter();
+
+      document.getElementById("input").onkeydown = async e => {
+        if (e.key === "Enter") {
+          await writer.write(new TextEncoder().encode(e.target.value + "\n"));
+          e.target.value = "";
         }
+      };
 
-        await device.claimInterface(cdcInterface.interfaceNumber);
-        const alternate = cdcInterface.alternates[0];
-        inEndpoint = alternate.endpoints.find(ep => ep.direction === "in").endpointNumber;
-        outEndpoint = alternate.endpoints.find(ep => ep.direction === "out").endpointNumber;
+      while (true) {
+        const { value } = await reader.read();
+        log(new TextDecoder().decode(value));
+      }
+    } catch {}
+  }
 
-        // Aseta portti valmiiksi
-        await device.controlTransferOut({
-            requestType: "class",
-            recipient: "interface",
-            request: 0x22, // SET_CONTROL_LINE_STATE
-            value: 0x01,
-            index: cdcInterface.interfaceNumber
-        });
-
-        logTerminal("USB-laite yhdistetty! Interface: " + cdcInterface.interfaceNumber +
-                    " IN: " + inEndpoint + " OUT: " + outEndpoint);
-
-        keepReading = true;
-        readLoop();
-    } catch (err) {
-        logTerminal("Virhe: " + err);
-    }
-}
-
-// Luku loop
-async function readLoop() {
-    while (keepReading) {
-        try {
-            const result = await device.transferIn(inEndpoint, 64);
-            const text = new TextDecoder().decode(result.data);
-            if (text) logTerminal(text.trim());
-        } catch (err) {
-            logTerminal("Lukuvirhe: " + err);
-            keepReading = false;
-        }
-    }
-}
-
-// Lähetä dataa
-async function sendData() {
-    if (!device) return logTerminal("Ei yhdistettyä laitetta!");
-    const input = document.getElementById("sendInput");
-    const data = new TextEncoder().encode(input.value + "\n");
-    input.value = "";
+  // 2️⃣ WEB USB
+  if ("usb" in navigator) {
     try {
-        await device.transferOut(outEndpoint, data);
-        logTerminal("> " + new TextDecoder().decode(data));
-    } catch (err) {
-        logTerminal("Virhe lähetyksessä: " + err);
-    }
-}
+      const dev = await navigator.usb.requestDevice({ filters: [] });
+      await dev.open();
+      log("⚠ WebUSB-laite (vain jos firmware tukee)");
+      return;
+    } catch {}
+  }
 
-document.getElementById("connectBtn").addEventListener("click", autoConnect);
-document.getElementById("sendBtn").addEventListener("click", sendData);
-document.getElementById("sendInput").addEventListener("keydown", e => { if (e.key === "Enter") sendData(); });
+  // 3️⃣ WEB HID
+  if ("hid" in navigator) {
+    try {
+      const [dev] = await navigator.hid.requestDevice({ filters: [] });
+      await dev.open();
+      log("⚠ WebHID-laite");
+      dev.oninputreport = e => {
+        log("HID: " + [...e.data.buffer].join(" "));
+      };
+      return;
+    } catch {}
+  }
+
+  log("❌ Laitetta ei voi käyttää selaimessa");
+}
 </script>
 
 </body>
 </html>
+
